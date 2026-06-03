@@ -21,7 +21,7 @@ The original Herculens code bundles the "resize" and "convolve" functions togeth
 
 Because an instance is passed directly into the `model` method this opens up the ability to pass in new instances without needing to recompile the `model` function.  This can be useful when creating a pipeline to fit a large number of lenses that potentially have different PSFs (e.g. Euclid) or if you want to do inference on the PSF.
 
-###  Ray-Buided Transformed Uniform grid (RTU-grid)
+###  Ray-guided Transformed Uniform grid (RTU-grid)
 
 Finally we implement the RTU-grid as presented in Wolfgang et. al. 2026.  Five new keywords can be provided to `LensImageRTUGrid` at initialization:
 - `rtu_grid_source` (bool): Use an RTU-grid as the source.  `False` is the default
