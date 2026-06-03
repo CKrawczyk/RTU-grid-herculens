@@ -53,7 +53,7 @@ Note: the RTU-grid contains non-square pixels that are dependent on the mass mod
 ```python
 from herculens import PSF, Noise, PixelGrid, PixelatedLight
 from herculens import MassModel, LightModel
-from LensImageRTUGrid import LensImageRTUGridm, SimpleFFTConvolve
+from LensImageRTUGrid import LensImageRTUGrid, SimpleFFTConvolve
 import jax_lensing_profiles # Imported because of MULTI_GAUSSIAN_ELLIPSE
 
 pix_scl = 0.1
@@ -80,15 +80,15 @@ source_light_model_pixelated = LightModel([
 
 supersampling_factor = 4
 pixel_grid_shape = 64
-lens_image_pixelated = LensImageNonUniform(
+lens_image_pixelated = LensImageRTUGrid(
     pixel_grid, PSF_holder,
     lens_mass_model_class=lens_mass_model,
     lens_light_model_class=lens_light_model,
     source_model_class=source_light_model_pixelated,
     kwargs_numerics={'supersampling_factor': supersampling_factor},
     source_arc_mask=jnp.ones((npix, npix), dtype=bool),
-    non_uniform_source=True,
-    non_uniform_source_size=pixel_grid_shape
+    rtu_grid_source=True,
+    rtu_grid_source_size=pixel_grid_shape
 )
 ```
 
