@@ -51,6 +51,10 @@ Note: the RTU-grid contains non-square pixels that are dependent on the mass mod
 
 
 ```python
+# set 64 bit mode
+import jax
+jax.config.update('jax_enable_x64', True)
+
 from herculens import PSF, Noise, PixelGrid, PixelatedLight
 from herculens import MassModel, LightModel
 from LensImageRTUGrid import LensImageRTUGrid, SimpleFFTConvolve
