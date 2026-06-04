@@ -339,9 +339,12 @@ class LensImageRTUGrid(LensImage):
             # flatten the mask for use with the RTU-grid transfrom
             self.source_arc_mask_flat = self.source_arc_mask.astype(bool).ravel()
             # mask the RTU mesh weights
-            self.rtu_mesh_weights_mask = rtu_mesh_weights[self.source_arc_mask_flat]
-            # normalize mesh weights
-            self.rtu_mesh_weights_mask = self.rtu_mesh_weights_mask / self.rtu_mesh_weights_mask.sum()
+            if rtu_mesh_weights is not None:
+                self.rtu_mesh_weights_mask = rtu_mesh_weights[self.source_arc_mask_flat]
+                # normalize mesh weights
+                self.rtu_mesh_weights_mask = self.rtu_mesh_weights_mask / self.rtu_mesh_weights_mask.sum()
+            else:
+                self.rtu_mesh_weights_mask = None
             # move the original mask to a new name so it is not applied during the lens modeling
             self.source_arc_mask_old = self.source_arc_mask
             self.source_arc_mask = None
@@ -510,7 +513,7 @@ class LensImageRTUGrid(LensImage):
 
     @partial(jax.jit, static_argnums=(0, 5, 6))
     def model(
-        self, kwargs_lens, kwargs_source, kwargs_lens_light, PSF_class,
+        self, PSF_class, kwargs_lens=None, kwargs_source=None, kwargs_lens_light=None,
         unconvolved=False, return_source_pixels_coords=False
     ):
         # PSF_class is passed in as a variable so it can be fit along side

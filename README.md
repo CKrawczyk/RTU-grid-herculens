@@ -1,6 +1,6 @@
 # RTU-grid-herculens
 
-A herculens implementation of the RTU-grid presented in Wolfgang et. al. 2026
+A herculens implementation of the RTU-grid presented in Wolfgang et al. 2026
 
 ## Requirements
 Herculens v0.2.2 (might work with more recent versions, but untested)
@@ -23,10 +23,10 @@ Because an instance is passed directly into the `model` method this opens up the
 
 ###  Ray-guided Transformed Uniform grid (RTU-grid)
 
-Finally we implement the RTU-grid as presented in Wolfgang et. al. 2026.  Five new keywords can be provided to `LensImageRTUGrid` at initialization:
+Finally we implement the RTU-grid as presented in Wolfgang et al. 2026.  Five new keywords can be provided to `LensImageRTUGrid` at initialization:
 - `rtu_grid_source` (bool): Use an RTU-grid as the source.  `False` is the default
 - `rtu_grid_source_size` (int): The number of pixels per side for the source grid.  `50` is the default.
-- `rtu_grid_type` (str): Either `'spline'` or `'linear'` and defines how the RTU's transformation is defined.  `'spline'` will fit a smoothing spline for the transform function, `linear` will use linear interpolation to define the transform.  The `'linear'` method is provided as a way to reproduce the plots in Appendix C of Wolfgang et. al. 2026, it is not recommended for use.  `'spline'` is the default.
+- `rtu_grid_type` (str): Either `'spline'` or `'linear'` and defines how the RTU's transformation is defined.  `'spline'` will fit a smoothing spline for the transform function, `linear` will use linear interpolation to define the transform.  The `'linear'` method is provided as a way to reproduce the plots in Appendix C of Wolfgang et al. 2026, it is not recommended for use.  `'spline'` is the default.
 - `rtu_poly_order` (int): Should be an odd number, the degree of the polynomial used to smooth out inverse-transform function when `'spline'` is used.  `11` is he default.  Note larger values will cause the transform to be slower.  ~`25` is the cross over point with `'linear'` typically becomes faster than `'spline'`.
 - `rtu_mesh_weights` (NxN array): NxN array the same shape as the observed image providing importance weights for each pixel when defining the transformation.  Smaller pixels will be use in the RTU-grid where these weights are larger.  These weights do not need to be normalized.
 
