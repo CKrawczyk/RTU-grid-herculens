@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+# import lineax as lx
 
 from functools import partial
 from herculens import LensImage, PixelGrid
@@ -17,6 +18,9 @@ def interp1d(x, xp, fp):
             xp,
             x,
             side='right',
+            # this method keyword is the main driver in computation time
+            # for the RTU-grid.  Depending on size of the observed image
+            # "compare_all" can be a bit faster
             method='scan_unrolled'
         ),
         1,
@@ -36,7 +40,14 @@ def interp1d(x, xp, fp):
 
 
 def spline_invert(ip, x):
-    k_right = jnp.digitize(x, ip.x_low_res, method='scan_unrolled')
+    k_right = jnp.digitize(
+        x,
+        ip.x_low_res,
+        # this method keyword is the main driver in computation time
+        # for the RTU-grid.  By construction `ip.x_low_res` is very small,
+        # "compare_all" is the fastest method for this case.
+        method='compare_all'
+    )
     k_left = k_right - 1
 
     # jax's default out-of-bound index gives
@@ -144,6 +155,45 @@ class InvertPolySpline:
 
 
 v_polyfit = jax.vmap(jnp.polyfit, in_axes=(1, 1, None, None, None, 1), out_axes=(1))
+
+
+# For reference different polyfit methods were tested that used QR decomposition
+# rather than the default SVD inside `jax.numpy.polyfit`, the tests did not show
+# any significant speedup when running on a GPU.  Because of the weights the 
+# matrix decomposition can't cached when the lensing mass changes, otherwise
+# that would be one obvious speedup.
+
+
+# def qr_polyfit(x, y, deg, weights):
+#     order = deg + 1
+#     lhs = jnp.vander(x, order)
+#     lhs *= weights[:, jnp.newaxis]
+#     rhs = y
+#     rhs *= weights
+#     scale = jnp.sqrt((lhs * lhs).sum(axis=0))
+#     lhs /= scale[jnp.newaxis, :]
+#     qr = jnp.linalg.qr(lhs)
+#     return jax.scipy.linalg.solve_triangular(qr.R, jnp.dot(qr.Q.T, rhs)) / scale
+
+
+# qr_v_polyfit = jax.jit(jax.vmap(qr_polyfit, in_axes=(1, 1, None, 1), out_axes=(1)), static_argnums=(2,))
+
+
+# def lx_polyfit(x, y, deg, weights):
+#     order = deg + 1
+#     lhs = jnp.vander(x, order)
+#     lhs *= weights[:, jnp.newaxis]
+#     rhs = y
+#     rhs *= weights
+#     scale = jnp.sqrt((lhs * lhs).sum(axis=0))
+#     lhs /= scale[jnp.newaxis, :]
+#     # there is a "silent re-compile" triggered if `trow=True`, make sure it is `False`
+#     sol = lx.linear_solve(lx.MatrixLinearOperator(lhs), rhs, solver=lx.QR(), throw=False)
+#     return sol.value / scale
+
+
+# lx_v_polyfit = jax.jit(jax.vmap(lx_polyfit, in_axes=(1, 1, None, 1), out_axes=(1)), static_argnums=(2,))
+
 v_gradient = jax.vmap(jnp.gradient, in_axes=(1, 1), out_axes=1)
 
 
@@ -176,7 +226,7 @@ def create_transforms_spline(traced_points, deg=21, mesh_weight_map=None):
     # log degree polynomials monotonic.
 
     # Use a number of Chebyshev nodes equal to the degree of the fit
-    cheb_deg = deg
+    cheb_deg = deg + 1
     # calculate nodes and interpolated values at the nodes
     cheb_nodes = jax.lax.stop_gradient(
         ((jnp.cos((2 * jnp.arange(cheb_deg) + 1) * jnp.pi / (2 * cheb_deg))[::-1]) + 1) / 2
@@ -187,6 +237,8 @@ def create_transforms_spline(traced_points, deg=21, mesh_weight_map=None):
     # fit the polynomial with weights
     w = v_gradient(cy, cx)
     coefs = v_polyfit(cy, cx, deg, None, False, w)
+    # coefs = lx_v_polyfit(cy, cx, deg, w)
+    # coefs = qr_v_polyfit(cy, cx, deg, w)
 
     # invert the polynomial with custom class
     # use the Chebyshev nodes (with the 0 and 1 appended as the start and end points)
