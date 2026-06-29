@@ -5,6 +5,7 @@ A herculens implementation of the RTU-grid presented in Wolfgang et al. 2026
 ## Requirements
 
 Herculens v0.2.2 (might work with more recent versions, but untested)
+Jax v0.5.3 (might work with more recent versions, but untested)
 
 ## Features
 
