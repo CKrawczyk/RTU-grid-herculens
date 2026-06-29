@@ -7,7 +7,7 @@ A herculens implementation of the RTU-grid presented in Wolfgang et al. 2026
 This code was developed and tested with the following versions of Herculens and Jax:
 
 - Herculens v0.2.2 and v0.3.0
-- Jax v0.4.83 and v0.7.2 (expected to work with higher versions, but untested)
+- Jax v0.4.38 and v0.7.2 (expected to work with higher versions, but untested)
 
 Importantly for the `PixelatedLight` class `interpolation_type='fast_bilinear'` should be used.  For this to work the `jaxinterp2d` package should be installed with
 
