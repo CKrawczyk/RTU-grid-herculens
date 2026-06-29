@@ -19,8 +19,7 @@ def interp1d(x, xp, fp):
             x,
             side='right',
             # this method keyword is the main driver in computation time
-            # for the RTU-grid.  Depending on size of the observed image
-            # "compare_all" can be a bit faster
+            # for the RTU-grid.
             method='scan_unrolled'
         ),
         1,
@@ -39,14 +38,19 @@ def interp1d(x, xp, fp):
     return f
 
 
-def spline_invert(ip, x):
+def spline_invert(
+    ip_x_low_res,
+    ip_y_low_res,
+    ip_dy_low_res,
+    ip_delta_x,
+    x
+):
     k_right = jnp.digitize(
         x,
-        ip.x_low_res,
+        ip_x_low_res,
         # this method keyword is the main driver in computation time
-        # for the RTU-grid.  By construction `ip.x_low_res` is very small,
-        # "compare_all" is the fastest method for this case.
-        method='compare_all'
+        # for the RTU-grid.
+        method='scan_unrolled'
     )
     k_left = k_right - 1
 
@@ -54,16 +58,16 @@ def spline_invert(ip, x):
     # correct result for point on the right most
     # edge of interpolation, no need to do anything
     # special for the boundary
-    t = (x - ip.x_low_res[k_left]) / ip.delta_x[k_left]
+    t = (x - ip_x_low_res[k_left]) / ip_delta_x[k_left]
     t2 = t**2
     t3 = t**3
     h00 = 2*t3 - 3*t2 + 1
     h10 = t3 - 2*t2 + t
     h01 = -2*t3 + 3*t2
     h11 = t3 - t2
-    term1 = ip.y_low_res[k_left] * h00
-    term2 = ip.y_low_res[k_right] * h01
-    term3 = (ip.dy_low_res[k_left]*h10 + ip.dy_low_res[k_right]*h11) * ip.delta_x[k_left]
+    term1 = ip_y_low_res[k_left] * h00
+    term2 = ip_y_low_res[k_right] * h01
+    term3 = (ip_dy_low_res[k_left]*h10 + ip_dy_low_res[k_right]*h11) * ip_delta_x[k_left]
     return term1 + term2 + term3
 
 
@@ -143,9 +147,15 @@ class InvertPolySpline:
     def fwd_transform(self, x):
         y = jax.vmap(
             spline_invert,
-            in_axes=(1, 1),
+            in_axes=(1, 1, 1, 1, 1),
             out_axes=(1)
-        )(self, x)
+        )(
+            self.x_low_res,
+            self.y_low_res,
+            self.dy_low_res,
+            self.delta_x,
+            x
+        )
         y = jnp.where(x <= self.lower_bound, 0.0, y)
         y = jnp.where(x >= self.upper_bound, 1.0, y)
         return jnp.clip(y, 0.0, 1.0)
@@ -252,17 +262,9 @@ def create_transforms_spline(traced_points, deg=21, mesh_weight_map=None):
 @register_pytree_node_class
 class InvertInterp:
     @staticmethod
-    def forward_interp(xp, yp, x):
+    def v_interp1d(xp, yp, x):
         return jax.vmap(
-            jnp.interp,
-            in_axes=(1, 1, 1, None, None),
-            out_axes=(1)
-        )(x, xp, yp, 0, 1)
-
-    @staticmethod
-    def reverse_interp(xp, yp, x):
-        return jax.vmap(
-            jnp.interp,
+            interp1d,
             in_axes=(1, 1, 1),
             out_axes=(1)
         )(x, xp, yp)
@@ -287,14 +289,17 @@ class InvertInterp:
         return cls(*(children + aux_data))
 
     def fwd_transform(self, x):
-        return InvertInterp.forward_interp(
+        y = InvertInterp.v_interp1d(
             self.sort_points,
             self.t,
             x
         )
+        y = jnp.where(x <= self.sort_points[0], 0.0, y)
+        y = jnp.where(x >= self.sort_points[-1], 1.0, y)
+        return jnp.clip(y, 0.0, 1.0)
 
     def rev_transform(self, y):
-        return InvertInterp.reverse_interp(
+        return InvertInterp.v_interp1d(
             self.t,
             self.sort_points,
             y
