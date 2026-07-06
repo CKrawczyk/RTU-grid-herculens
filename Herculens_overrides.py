@@ -17,8 +17,11 @@ class LightModelRTU(LightModel):
             return False
         return self.func_list[self.pixelated_index].is_rtu_grid
 
-    def pixel_rtu_uniform_transform(self, *args):
-        return self.func_list[self.pixelated_index].rtu_uniform_transform(*args)
+    @partial(jax.jit, static_argnums=(0, 3))
+    def pixel_rtu_uniform_transform(self, x_mask, y_mask, weights_mask):
+        return self.func_list[self.pixelated_index].rtu_uniform_transform(
+            x_mask, y_mask, weights_mask
+        )
     
     def surface_brightness(
             self, x, y, kwargs, k=None,
