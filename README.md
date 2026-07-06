@@ -1,6 +1,6 @@
 # RTU-grid-herculens
 
-A herculens implementation of the RTU-grid presented in Wolfgang et al. 2026
+A herculens implementation of the RTU-grid presented in Enzi et al. 2026
 
 ## Requirements
 
