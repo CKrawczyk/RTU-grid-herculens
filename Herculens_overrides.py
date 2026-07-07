@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from herculens import PixelatedLight, LightModel, LensImage, PixelGrid
+from herculens import PixelatedLight, LightModel, LensImage, PixelGrid, MPLightModel, MPLensImage
 from herculens.LightModel.light_model import function_static_single
 from LensImageRTUGrid import create_transforms_linear_interp, create_transforms_spline
 from scipy.fft import next_fast_len
@@ -19,9 +19,10 @@ class LightModelRTU(LightModel):
 
     @partial(jax.jit, static_argnums=(0, 3))
     def pixel_rtu_uniform_transform(self, x_mask, y_mask, weights_mask):
-        return self.func_list[self.pixelated_index].rtu_uniform_transform(
-            x_mask, y_mask, weights_mask
-        )
+        if self.pixel_is_rtu_grid:
+            return self.func_list[self.pixelated_index].rtu_uniform_transform(
+                x_mask, y_mask, weights_mask
+            )
     
     def surface_brightness(
             self, x, y, kwargs, k=None,
@@ -127,6 +128,44 @@ class LightModelRTU(LightModel):
         return flux
 
 
+class MPLightModelRTU(MPLightModel):
+    @property
+    def pixel_is_rtu_grid(self):
+        return [light_model.pixel_is_rtu_grid if light_model is not None else False for light_model in self.light_models]
+
+    def pixel_rtu_uniform_transform(self, x_plane, y_plane, weights_plane):
+        return [
+            self.light_models[j].pixel_rtu_uniform_transform(x_plane[j], y_plane[j], weights_plane[j])[0]
+            for j in range(self.number_light_planes)
+        ]
+
+    @partial(jax.jit, static_argnums=(0, 7))
+    def surface_brightness(
+        self,
+        x,
+        y,
+        kwargs_list,
+        pixels_x_coord,
+        pixels_y_coord,
+        transform_params=None,
+        k=None,
+    ):
+        k = self.k_expand(k)
+        flux = []
+        for j in range(self.number_light_planes):
+            if self.has_light[j]:
+                flux.append(
+                    self.light_models[j].surface_brightness(
+                        x[j], y[j], kwargs_list[j],
+                        k=k[j],
+                        pixels_x_coord=pixels_x_coord[j],
+                        pixels_y_coord=pixels_y_coord[j],
+                        transform_params=transform_params[j]
+                    )
+                )
+        return jnp.stack(flux)   
+
+
 class PixelatedLightRTU(PixelatedLight):
     def __init__(
         self,
@@ -217,6 +256,31 @@ class PixelatedLightRTU(PixelatedLight):
             self._uniform_pixel_centers_stack[-1:] + half_pixel_width
         ]
 
+    def derivatives(self, x, y, pixels_x_coord=None, pixels_y_coord=None, pixels=None, transform_params=None):
+        if self._deriv_type == 'interpol':
+            f_x, f_y = self._derivatives_interpol(x, y, pixels_x_coord, pixels_y_coord, pixels, transform_params)
+        elif self._deriv_type == 'autodiff':
+            f_x, f_y = self._derivatives_autodiff(x, y, pixels_x_coord, pixels_y_coord, pixels, transform_params)
+        # normalize for correct units when evaluated by LensImage methods
+        return f_x / self._data_pixel_area, f_y / self._data_pixel_area
+
+
+    def _derivatives_autodiff(self, x, y, pixels_x_coord, pixels_y_coord, pixels, transform_params):
+        def function(params):
+            res = self.function(
+                params[0], params[1], 
+                pixels_x_coord=pixels_x_coord, pixels_y_coord=pixels_y_coord,
+                pixels=pixels, transform_params=transform_params)
+            if self._interp_type != 'fast_bilinear':
+                res = res[0]
+            return res
+        grad_func = jax.grad(function)
+        param_array = jnp.array([x.flatten(), y.flatten()]).T
+        res = jax.vmap(grad_func)(param_array)
+        f_x = res[:, 0].reshape(*x.shape)
+        f_y = res[:, 1].reshape(*x.shape)
+        return f_x, f_y
+
 
 @register_pytree_node_class
 class SimpleFFTConvolve():
@@ -269,12 +333,7 @@ class SimpleFFTConvolve():
 
 
 class LensImageRTUGrid(LensImage):
-    def __init__(
-            self,
-            *args,
-            rtu_mesh_weights=None,
-            **kwargs
-        ):
+    def __init__(self, *args, rtu_mesh_weights=None, **kwargs):
         super().__init__(*args, **kwargs)
 
         self._src_rtu_grid = self.SourceModel.pixel_is_rtu_grid
@@ -308,12 +367,65 @@ class LensImageRTUGrid(LensImage):
                 dec_at_xy_0=zero_point
             )
             self.SourceModel.set_pixel_grid(pixel_grid, self.Grid.pixel_area)
+        self.centers = np.array(self.Grid.pixel_coordinates).reshape(2, -1)
+    
+    def eval_source_surface_brightness(
+            self, x, y, kwargs_source, kwargs_lens=None, 
+            k=None, k_lens=None, de_lensed=False,
+            adapted_pixels_coords=None, 
+            return_pixels_coords=False,
+            return_as_list=False
+        ):
+        transform_params = None
+        pixels_x_coord = None
+        pixels_y_coord = None
+        pixels_x_coord_in = None
+        pixels_y_coord_in = None
+        if self._src_rtu_grid:
+            x_grid, y_grid = self.MassModel.ray_shooting(
+                self.centers[0][self.source_arc_mask_flat],
+                self.centers[1][self.source_arc_mask_flat],
+                kwargs_lens
+            )
+            transform_params, grid_coords, grid_edges = self.SourceModel.pixel_rtu_uniform_transform(
+                x_grid, y_grid, self.rtu_mesh_weights_mask
+            )
+            pixels_x_coord = grid_coords
+            pixels_y_coord = grid_edges
+        elif self._src_adaptive_grid:
+            if adapted_pixels_coords is None:
+                pixels_x_coord_in, pixels_y_coord_in, _ = self.adapt_source_coordinates(kwargs_lens)
+            else:
+                pixels_x_coord_in, pixels_y_coord_in = adapted_pixels_coords
+            pixels_x_coord = pixels_x_coord_in
+            pixels_y_coord = pixels_y_coord_in
 
+        if de_lensed is True:
+            source_light = self.SourceModel.surface_brightness(
+                x, y, kwargs_source, k=k,
+                pixels_x_coord=pixels_x_coord, pixels_y_coord=pixels_y_coord,
+                transform_params=transform_params,
+                return_as_list=return_as_list
+            )
+        else:
+            x_grid_src, y_grid_src = self.MassModel.ray_shooting(x, y, kwargs_lens, k=k_lens)
+            source_light = self.SourceModel.surface_brightness(
+                x_grid_src, y_grid_src, kwargs_source, k=k,
+                pixels_x_coord=pixels_x_coord_in, pixels_y_coord=pixels_y_coord_in,
+                transform_params=transform_params
+            )
+        if return_pixels_coords:
+            return source_light, (pixels_x_coord, pixels_y_coord)
+        return source_light
+
+
+class LensImageRTUGridLowMem(LensImageRTUGrid):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         # For memory efficiency supersampling is calculated one "observed grid" at a time
         # and the average is tracked as a running sum.  Define the "center offsets" for
         # each supersampling location so it can be looped over later on.
         self.deltas = self.get_deltas()
-        self.centers = np.array(self.Grid.pixel_coordinates).reshape(2, -1)
         self.pixel_area = self.Grid.pixel_width**2
 
     def get_deltas(self):
@@ -428,3 +540,112 @@ class LensImageRTUGrid(LensImage):
         if return_source_pixels_coords:
             return model, adapted_source_pixels_coords
         return model
+
+
+class MPLensImageRTUGrid(MPLensImage):
+    def __init__(self, *args, rtu_mesh_weights=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.centers = np.array(self.Grid.pixel_coordinates).reshape(2, -1)
+        self._src_rtu_grid = self.SourceModel.pixel_is_rtu_grid
+        self.rtu_mesh_weights_mask = []
+        self.source_arc_masks_old = self.source_arc_masks
+        for i, has_rtu in enumerate(self._src_rtu_grid):
+            if has_rtu and (rtu_mesh_weights is not None):
+                w = np.where(self.source_arc_masks_old[i], rtu_mesh_weights[i], 0.0).ravel()
+            else:
+                w = np.where(self.source_arc_masks_old[i], 1.0, 0.0).ravel()
+            self.rtu_mesh_weights_mask.append(w / w.sum())
+            # remove the original mask
+            self.source_arc_masks[i] = np.ones(self.Grid.num_pixel_axes)
+            n_pix = self.MPLightModel.light_models[i].pixel_grid_settings['num_pixels']
+            pixel_width = (1 - 2e-5) / n_pix
+            zero_point = 0.5 * pixel_width + 1e-5
+            pixel_grid = PixelGrid(
+                n_pix,
+                n_pix,
+                pixel_width * np.eye(2),
+                ra_at_xy_0=zero_point,
+                dec_at_xy_0=zero_point
+            )
+            self.MPLightModel.light_models[i].set_pixel_grid(pixel_grid, self.Grid.pixel_area)
+        ssf = self.ImageNumerics.grid_supersampling_factor
+
+        # get masks in super sampled space
+        s_ones = np.ones([ssf, ssf])
+        self.source_arc_masks_ss = np.stack([
+            np.kron(m, s_ones) for m in self.source_arc_masks
+        ])
+        # flatten the super sampled masks
+        self._source_arc_masks_flat = self.source_arc_masks_ss.reshape(
+            self.MPLightModel.number_light_planes,
+            -1
+        )
+        self.rtu_mesh_weights_mask = np.array(self.rtu_mesh_weights_mask)
+        self.centers = np.array(self.Grid.pixel_coordinates).reshape(2, -1)
+
+    @partial(jax.jit, static_argnums=(0, 4, 5, 6, 7, 8, 9, 10, 11))
+    def model(
+        self,
+        eta_flat=None,
+        kwargs_mass=None,
+        kwargs_light=None,
+        supersampled=False,
+        unconvolved=False,
+        k_mass=None,
+        k_light=None,
+        k_planes=None,
+        apply_mask=True,
+        return_pixel_scale=False,
+        point_source_add=False,
+        kwargs_point_source=None,
+    ):
+        ra_grid_img, dec_grid_img = self.ImageNumerics.coordinates_evaluate
+        transform_params = [None] * self.MPLightModel.number_light_planes
+        if any(self._src_rtu_grid):
+            ra_centers_planes, dec_centers_planes = self.MPMassModel.ray_shooting(
+                self.centers[0],
+                self.centers[1],
+                eta_flat,
+                kwargs_mass
+            )
+            transform_params = self.MPLightModel.pixel_rtu_uniform_transform(
+                ra_centers_planes, dec_centers_planes, self.rtu_mesh_weights_mask
+            )
+
+        # pixel grid positions on each mass plane (including the lens plane)
+        ra_grid_planes, dec_grid_planes = self.MPMassModel.ray_shooting(
+            ra_grid_img,
+            dec_grid_img,
+            eta_flat,
+            kwargs_mass,
+            k=k_mass
+        )
+        # (masked) light contribution from each plane
+        pixels_x_coord, pixels_y_coord, _ = self.adapt_source_coordinates(
+            ra_grid_planes,
+            dec_grid_planes
+        )
+        light_planes = self.MPLightModel.surface_brightness(
+            ra_grid_planes,
+            dec_grid_planes,
+            kwargs_light,
+            pixels_x_coord,
+            pixels_y_coord,
+            k=k_light,
+            transform_params=transform_params
+        )
+        if apply_mask:
+            light_planes = light_planes * self._source_arc_masks_flat
+        k_planes = self.k_extend(k_planes, len(light_planes))
+        model = light_planes[k_planes].sum(axis=0)
+        if not supersampled:
+            model = self.ImageNumerics.re_size_convolve(model, unconvolved=unconvolved)
+            if point_source_add:
+                model = model + self.point_source_image(
+                    kwargs_point_source, eta_flat, kwargs_mass
+                )
+        if return_pixel_scale:
+            pixel_scale = [x[1] - x[0] if x is not None else None for x in pixels_x_coord]
+            return model, pixel_scale
+        else:
+            return model
