@@ -235,7 +235,7 @@ class PixelatedLightRTU(PixelatedLight):
             f = self._function_fast(x, y, pixels_x_coord, pixels_y_coord, pixels)
         elif self._interp_type in ['bilinear', 'bicubic']:
             f = self._function_std(x, y, pixels_x_coord, pixels_y_coord, pixels)
-        if (self._rtu_grid) and (not self._extrapol_bool):
+        if self._rtu_grid:
             # correctly set "out of bounds" pixels to 0
             f = jnp.where(
                 jnp.bitwise_or(out_of_x, out_of_y),
@@ -367,8 +367,18 @@ class LensImageRTUGrid(LensImage):
                 dec_at_xy_0=zero_point
             )
             self.SourceModel.set_pixel_grid(pixel_grid, self.Grid.pixel_area)
-        self.centers = np.array(self.Grid.pixel_coordinates).reshape(2, -1)
-    
+
+    def adapt_rtu_transform(self, kwargs_lens):
+        x_grid_img, y_grid_img = self.Grid.pixel_coordinates
+        x_grid_src, y_grid_src = self.MassModel.ray_shooting(
+            x_grid_img.ravel()[self.source_arc_mask_flat],
+            y_grid_img.ravel()[self.source_arc_mask_flat],
+            kwargs_lens
+        )
+        return self.SourceModel.pixel_rtu_uniform_transform(
+            x_grid_src, y_grid_src, self.rtu_mesh_weights_mask
+        )
+
     def eval_source_surface_brightness(
             self, x, y, kwargs_source, kwargs_lens=None, 
             k=None, k_lens=None, de_lensed=False,
@@ -379,26 +389,13 @@ class LensImageRTUGrid(LensImage):
         transform_params = None
         pixels_x_coord = None
         pixels_y_coord = None
-        pixels_x_coord_in = None
-        pixels_y_coord_in = None
         if self._src_rtu_grid:
-            x_grid, y_grid = self.MassModel.ray_shooting(
-                self.centers[0][self.source_arc_mask_flat],
-                self.centers[1][self.source_arc_mask_flat],
-                kwargs_lens
-            )
-            transform_params, grid_coords, grid_edges = self.SourceModel.pixel_rtu_uniform_transform(
-                x_grid, y_grid, self.rtu_mesh_weights_mask
-            )
-            pixels_x_coord = grid_coords
-            pixels_y_coord = grid_edges
+            transform_params, grid_coords, grid_edges = self.adapt_rtu_transform(kwargs_lens)
         elif self._src_adaptive_grid:
             if adapted_pixels_coords is None:
-                pixels_x_coord_in, pixels_y_coord_in, _ = self.adapt_source_coordinates(kwargs_lens)
+                pixels_x_coord, pixels_y_coord, _ = self.adapt_source_coordinates(kwargs_lens)
             else:
-                pixels_x_coord_in, pixels_y_coord_in = adapted_pixels_coords
-            pixels_x_coord = pixels_x_coord_in
-            pixels_y_coord = pixels_y_coord_in
+                pixels_x_coord, pixels_y_coord = adapted_pixels_coords
 
         if de_lensed is True:
             source_light = self.SourceModel.surface_brightness(
@@ -411,11 +408,15 @@ class LensImageRTUGrid(LensImage):
             x_grid_src, y_grid_src = self.MassModel.ray_shooting(x, y, kwargs_lens, k=k_lens)
             source_light = self.SourceModel.surface_brightness(
                 x_grid_src, y_grid_src, kwargs_source, k=k,
-                pixels_x_coord=pixels_x_coord_in, pixels_y_coord=pixels_y_coord_in,
+                pixels_x_coord=pixels_x_coord, pixels_y_coord=pixels_y_coord,
                 transform_params=transform_params
             )
         if return_pixels_coords:
-            return source_light, (pixels_x_coord, pixels_y_coord)
+            if self._src_rtu_grid:
+                coords = (grid_coords, grid_edges)
+            else:
+                coords = (pixels_x_coord, pixels_y_coord)
+            return source_light, coords
         return source_light
 
 
@@ -427,6 +428,7 @@ class LensImageRTUGridLowMem(LensImageRTUGrid):
         # each supersampling location so it can be looped over later on.
         self.deltas = self.get_deltas()
         self.pixel_area = self.Grid.pixel_width**2
+        self.centers = np.array(self.Grid.pixel_coordinates).reshape(2, -1)
 
     def get_deltas(self):
         supersampling_factor = self.ImageNumerics.grid_supersampling_factor
@@ -443,23 +445,10 @@ class LensImageRTUGridLowMem(LensImageRTUGrid):
         transform_params = None
         pixels_x_coord = None
         pixels_y_coord = None
-        pixels_x_coord_in = None
-        pixels_y_coord_in = None
         if self._src_rtu_grid:
-            x_grid, y_grid = self.MassModel.ray_shooting(
-                self.centers[0][self.source_arc_mask_flat],
-                self.centers[1][self.source_arc_mask_flat],
-                kwargs_lens
-            )
-            transform_params, grid_coords, grid_edges = self.SourceModel.pixel_rtu_uniform_transform(
-                x_grid, y_grid, self.rtu_mesh_weights_mask
-            )
-            pixels_x_coord = grid_coords
-            pixels_y_coord = grid_edges
+            transform_params, grid_coords, grid_edges = self.adapt_rtu_transform(kwargs_lens)
         elif self._src_adaptive_grid:
-            pixels_x_coord_in, pixels_y_coord_in, _ = self.adapt_source_coordinates(kwargs_lens)
-            pixels_x_coord = pixels_x_coord_in
-            pixels_y_coord = pixels_y_coord_in
+            pixels_x_coord, pixels_y_coord, _ = self.adapt_source_coordinates(kwargs_lens)
 
         # use jax.checkpoint to keep memory usage low when taking reverse mode jacobian
         @jax.checkpoint
@@ -474,7 +463,7 @@ class LensImageRTUGridLowMem(LensImageRTUGrid):
             )
             new_value = self.SourceModel.surface_brightness(
                 x_grid_src, y_grid_src, kwargs_source,
-                pixels_x_coord=pixels_x_coord_in, pixels_y_coord=pixels_y_coord_in,
+                pixels_x_coord=pixels_x_coord, pixels_y_coord=pixels_y_coord,
                 transform_params=transform_params
             )
             # track a running mean
@@ -490,7 +479,11 @@ class LensImageRTUGridLowMem(LensImageRTUGrid):
         (_, source_light) = jax.lax.scan(body, init, self.deltas)[0]
 
         if return_pixels_coords:
-            return source_light, (pixels_x_coord, pixels_y_coord)
+            if self._src_rtu_grid:
+                coords = (grid_coords, grid_edges)
+            else:
+                coords = (pixels_x_coord, pixels_y_coord)
+            return source_light, coords
         return source_light
 
     def lens_surface_brightness(self, kwargs_lens_light):
