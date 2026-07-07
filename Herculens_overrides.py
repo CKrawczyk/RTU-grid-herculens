@@ -4,7 +4,7 @@ import numpy as np
 
 from herculens import PixelatedLight, LightModel, LensImage, PixelGrid, MPLightModel, MPLensImage
 from herculens.LightModel.light_model import function_static_single
-from LensImageRTUGrid import create_transforms_linear_interp, create_transforms_spline
+from RTUGrid import create_transforms_linear_interp, create_transforms_spline
 from scipy.fft import next_fast_len
 from jax.tree_util import register_pytree_node_class
 from functools import partial
