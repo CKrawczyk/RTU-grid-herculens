@@ -184,13 +184,19 @@ class MPLensImageRTUGridLowMem(MPLensImageRTUGrid):
         kwargs_point_source=None,
     ):
         transform_params = [None] * self.MPLightModel.number_light_planes
+        ra_centers_planes, dec_centers_planes = self.MPMassModel.ray_shooting(
+            self.centers[0],
+            self.centers[1],
+            eta_flat,
+            kwargs_mass
+        )
+        # all sub-pixels need to resolve to the same grid if adaptive
+        # calculated in once up front on the trance of the pixel centers
+        pixels_x_coord, pixels_y_coord, _ = self.adapt_source_coordinates(
+            ra_centers_planes,
+            dec_centers_planes
+        )
         if any(self._src_rtu_grid):
-            ra_centers_planes, dec_centers_planes = self.MPMassModel.ray_shooting(
-                self.centers[0],
-                self.centers[1],
-                eta_flat,
-                kwargs_mass
-            )
             transform_params = self.MPLightModel.pixel_rtu_uniform_transform(
                 ra_centers_planes, dec_centers_planes, self.rtu_mesh_weights_mask
             )
@@ -207,10 +213,6 @@ class MPLensImageRTUGridLowMem(MPLensImageRTUGrid):
                 eta_flat,
                 kwargs_mass,
             )
-            pixels_x_coord, pixels_y_coord, _ = self.adapt_source_coordinates(
-                ra_grid_planes,
-                dec_grid_planes
-            )
             new_value = self.MPLightModel.surface_brightness(
                 ra_grid_planes,
                 dec_grid_planes,
@@ -219,10 +221,11 @@ class MPLensImageRTUGridLowMem(MPLensImageRTUGrid):
                 pixels_y_coord,
                 transform_params=transform_params
             )
+            # apply mask if needed before summing
             if apply_mask:
                 new_value = new_value * self._source_arc_masks_flat
             new_value.sum(axis=0)
-            # track a running mean
+            # track a running mean on the sum of the planes
             new_value = new_value * self.pixel_area
             count += 1
             delta_value = new_value - mean
