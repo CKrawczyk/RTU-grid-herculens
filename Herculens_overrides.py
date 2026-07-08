@@ -17,7 +17,7 @@ class LightModelRTU(LightModel):
             return False
         return self.func_list[self.pixelated_index].is_rtu_grid
 
-    @partial(jax.jit, static_argnums=(0, 3))
+    @partial(jax.jit, static_argnums=(0,))
     def pixel_rtu_uniform_transform(self, x_mask, y_mask, weights_mask):
         if self.pixel_is_rtu_grid:
             return self.func_list[self.pixelated_index].rtu_uniform_transform(

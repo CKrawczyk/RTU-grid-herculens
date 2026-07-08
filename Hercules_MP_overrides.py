@@ -12,16 +12,18 @@ class MPLightModelRTU(MPLightModel):
         return [light_model.pixel_is_rtu_grid if light_model is not None else False for light_model in self.light_models]
 
     def pixel_rtu_uniform_transform(self, x_plane, y_plane, mask_plane, weights_plane):
-        return [
-            # Large number of zero-weight points will mess up
-            # the polyfit, apply the mask to each plane here
-            self.light_models[j].pixel_rtu_uniform_transform(
-                x_plane[j][mask_plane[j]],
-                y_plane[j][mask_plane[j]],
-                weights_plane[j][mask_plane[j]]
-            )[0]
-            for j in range(self.number_light_planes)
-        ]
+        output = []
+        for jdx, plane in enumerate(self.light_models):
+            o = None
+            if (plane is not None):
+                if (plane.pixel_is_rtu_grid):
+                    o = plane.pixel_rtu_uniform_transform(
+                        x_plane[jdx][mask_plane[jdx]],
+                        y_plane[jdx][mask_plane[jdx]],
+                        weights_plane[jdx][mask_plane[jdx]]
+                    )
+            output.append(o)
+        return output
 
     @partial(jax.jit, static_argnums=(0, 7))
     def surface_brightness(
@@ -54,7 +56,7 @@ class MPLensImageRTUGrid(MPLensImage):
     def __init__(self, *args, rtu_mesh_weights=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.centers = np.array(self.Grid.pixel_coordinates).reshape(2, -1)
-        self._src_rtu_grid = self.SourceModel.pixel_is_rtu_grid
+        self._src_rtu_grid = self.MPLightModel.pixel_is_rtu_grid
         self.rtu_mesh_weights_mask = []
         self.source_arc_masks_old = self.source_arc_masks
         for i, has_rtu in enumerate(self._src_rtu_grid):
@@ -65,23 +67,24 @@ class MPLensImageRTUGrid(MPLensImage):
             self.rtu_mesh_weights_mask.append(w / w.sum())
             # remove the original mask and replace with one based on the weights value
             self.source_arc_masks[i] = (w > 0).reshape(self.Grid.num_pixel_axes)
-            n_pix = self.MPLightModel.light_models[i].pixel_grid_settings['num_pixels']
-            pixel_width = (1 - 2e-5) / n_pix
-            zero_point = 0.5 * pixel_width + 1e-5
-            pixel_grid = PixelGrid(
-                n_pix,
-                n_pix,
-                pixel_width * np.eye(2),
-                ra_at_xy_0=zero_point,
-                dec_at_xy_0=zero_point
-            )
-            self.MPLightModel.light_models[i].set_pixel_grid(pixel_grid, self.Grid.pixel_area)
+            if has_rtu:
+                n_pix = self.MPLightModel.light_models[i].pixel_grid_settings['num_pixels']
+                pixel_width = (1 - 2e-5) / n_pix
+                zero_point = 0.5 * pixel_width + 1e-5
+                pixel_grid = PixelGrid(
+                    n_pix,
+                    n_pix,
+                    pixel_width * np.eye(2),
+                    ra_at_xy_0=zero_point,
+                    dec_at_xy_0=zero_point
+                )
+                self.MPLightModel.light_models[i].set_pixel_grid(pixel_grid, self.Grid.pixel_area)
         ssf = self.ImageNumerics.grid_supersampling_factor
 
         self.source_arc_masks_flat = self.source_arc_masks.reshape(
             self.MPLightModel.number_light_planes,
             -1
-        )
+        ).astype(bool)
         # get masks in super sampled space
         s_ones = np.ones([ssf, ssf])
         self.source_arc_masks_ss = np.stack([
@@ -95,7 +98,7 @@ class MPLensImageRTUGrid(MPLensImage):
         self.rtu_mesh_weights_mask = np.array(self.rtu_mesh_weights_mask)
         self.centers = np.array(self.Grid.pixel_coordinates).reshape(2, -1)
 
-    @partial(jax.jit, static_argnums=(0, 4, 5, 6, 7, 8, 9, 10, 11))
+    @partial(jax.jit, static_argnums=(0, 4, 5, 6, 7, 8, 9, 10, 11, 12))
     def model(
         self,
         eta_flat=None,
@@ -108,6 +111,7 @@ class MPLensImageRTUGrid(MPLensImage):
         k_planes=None,
         apply_mask=True,
         return_pixel_scale=False,
+        return_pixels_coords=False,
         point_source_add=False,
         kwargs_point_source=None,
     ):
@@ -120,12 +124,15 @@ class MPLensImageRTUGrid(MPLensImage):
                 eta_flat,
                 kwargs_mass
             )
-            transform_params = self.MPLightModel.pixel_rtu_uniform_transform(
+            transform_outputs = self.MPLightModel.pixel_rtu_uniform_transform(
                 ra_centers_planes,
                 dec_centers_planes,
                 self.source_arc_masks_flat,
                 self.rtu_mesh_weights_mask
             )
+            transform_params = [t[0] if t is not None else None for t in transform_outputs]
+            grid_coords = [t[1] if t is not None else None for t in transform_outputs]
+            grid_edges = [t[2] if t is not None else None for t in transform_outputs]
 
         # pixel grid positions on each mass plane (including the lens plane)
         ra_grid_planes, dec_grid_planes = self.MPMassModel.ray_shooting(
@@ -159,6 +166,11 @@ class MPLensImageRTUGrid(MPLensImage):
                 model = model + self.point_source_image(
                     kwargs_point_source, eta_flat, kwargs_mass
                 )
+        if return_pixels_coords:
+            if any(self._src_rtu_grid):
+                return model, (grid_coords, grid_edges)
+            else:
+                return model, None
         if return_pixel_scale:
             pixel_scale = [x[1] - x[0] if x is not None else None for x in pixels_x_coord]
             return model, pixel_scale
