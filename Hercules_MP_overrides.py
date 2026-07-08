@@ -171,7 +171,7 @@ class MPLensImageRTUGridLowMem(MPLensImageRTUGrid):
         sub_grid = jnp.array(jnp.meshgrid(sub_centers, sub_centers)).T.reshape(supersampling_factor**2, 2, 1)
         return sub_grid * pixel_width
 
-    @partial(jax.jit, static_argnums=(0, 5, 6, 7))
+    @partial(jax.jit, static_argnums=(0, 5, 6))
     def model(
         self,
         PSF_class,
@@ -179,9 +179,7 @@ class MPLensImageRTUGridLowMem(MPLensImageRTUGrid):
         kwargs_mass=None,
         kwargs_light=None,
         unconvolved=False,
-        apply_mask=True,
-        point_source_add=False,
-        kwargs_point_source=None,
+        apply_mask=True
     ):
         transform_params = [None] * self.MPLightModel.number_light_planes
         ra_centers_planes, dec_centers_planes = self.MPMassModel.ray_shooting(
@@ -237,8 +235,4 @@ class MPLensImageRTUGridLowMem(MPLensImageRTUGrid):
         (_, model) = jax.lax.scan(body, init, self.deltas)[0]
         if not unconvolved:
             model = PSF_class.convolution2d(model)
-        if point_source_add:
-            model = model + self.point_source_image(
-                kwargs_point_source, eta_flat, kwargs_mass
-            )
         return model
