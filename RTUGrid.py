@@ -4,8 +4,6 @@ import numpy as np
 # import lineax as lx
 
 from functools import partial
-from herculens import LensImage, PixelGrid
-from scipy.fft import next_fast_len
 from jax.tree_util import register_pytree_node_class
 
 

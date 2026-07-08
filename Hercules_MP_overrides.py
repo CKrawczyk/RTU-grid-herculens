@@ -11,9 +11,15 @@ class MPLightModelRTU(MPLightModel):
     def pixel_is_rtu_grid(self):
         return [light_model.pixel_is_rtu_grid if light_model is not None else False for light_model in self.light_models]
 
-    def pixel_rtu_uniform_transform(self, x_plane, y_plane, weights_plane):
+    def pixel_rtu_uniform_transform(self, x_plane, y_plane, mask_plane, weights_plane):
         return [
-            self.light_models[j].pixel_rtu_uniform_transform(x_plane[j], y_plane[j], weights_plane[j])[0]
+            # Large number of zero-weight points will mess up
+            # the polyfit, apply the mask to each plane here
+            self.light_models[j].pixel_rtu_uniform_transform(
+                x_plane[j][mask_plane[j]],
+                y_plane[j][mask_plane[j]],
+                weights_plane[j][mask_plane[j]]
+            )[0]
             for j in range(self.number_light_planes)
         ]
 
@@ -57,8 +63,8 @@ class MPLensImageRTUGrid(MPLensImage):
             else:
                 w = np.where(self.source_arc_masks_old[i], 1.0, 0.0).ravel()
             self.rtu_mesh_weights_mask.append(w / w.sum())
-            # remove the original mask
-            self.source_arc_masks[i] = np.ones(self.Grid.num_pixel_axes)
+            # remove the original mask and replace with one based on the weights value
+            self.source_arc_masks[i] = (w > 0).reshape(self.Grid.num_pixel_axes)
             n_pix = self.MPLightModel.light_models[i].pixel_grid_settings['num_pixels']
             pixel_width = (1 - 2e-5) / n_pix
             zero_point = 0.5 * pixel_width + 1e-5
@@ -72,6 +78,10 @@ class MPLensImageRTUGrid(MPLensImage):
             self.MPLightModel.light_models[i].set_pixel_grid(pixel_grid, self.Grid.pixel_area)
         ssf = self.ImageNumerics.grid_supersampling_factor
 
+        self.source_arc_masks_flat = self.source_arc_masks.reshape(
+            self.MPLightModel.number_light_planes,
+            -1
+        )
         # get masks in super sampled space
         s_ones = np.ones([ssf, ssf])
         self.source_arc_masks_ss = np.stack([
@@ -111,7 +121,10 @@ class MPLensImageRTUGrid(MPLensImage):
                 kwargs_mass
             )
             transform_params = self.MPLightModel.pixel_rtu_uniform_transform(
-                ra_centers_planes, dec_centers_planes, self.rtu_mesh_weights_mask
+                ra_centers_planes,
+                dec_centers_planes,
+                self.source_arc_masks_flat,
+                self.rtu_mesh_weights_mask
             )
 
         # pixel grid positions on each mass plane (including the lens plane)
@@ -196,7 +209,10 @@ class MPLensImageRTUGridLowMem(MPLensImageRTUGrid):
         )
         if any(self._src_rtu_grid):
             transform_params = self.MPLightModel.pixel_rtu_uniform_transform(
-                ra_centers_planes, dec_centers_planes, self.rtu_mesh_weights_mask
+                ra_centers_planes,
+                dec_centers_planes,
+                self.source_arc_masks_flat,
+                self.rtu_mesh_weights_mask
             )
 
         # use jax.checkpoint to keep memory usage low when taking reverse mode jacobian

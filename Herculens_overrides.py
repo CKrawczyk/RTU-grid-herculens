@@ -308,7 +308,11 @@ class LensImageRTUGrid(LensImage):
             self.source_arc_mask_flat = self.source_arc_mask.astype(bool).ravel()
             # mask the RTU mesh weights
             if rtu_mesh_weights is not None:
-                self.rtu_mesh_weights_mask = rtu_mesh_weights[self.source_arc_mask_flat]
+                rtu_mesh_weights_flat = rtu_mesh_weights.ravel()
+                # remove any zero weighted pixels from the mask
+                # zero weighted pixels in the mask could mess up the transformation code
+                self.source_arc_mask_flat = self.source_arc_mask_flat & (rtu_mesh_weights_flat > 0)
+                self.rtu_mesh_weights_mask = rtu_mesh_weights_flat[self.source_arc_mask_flat]
                 # normalize mesh weights
                 self.rtu_mesh_weights_mask = self.rtu_mesh_weights_mask / self.rtu_mesh_weights_mask.sum()
             else:
