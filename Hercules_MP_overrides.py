@@ -17,10 +17,13 @@ class MPLightModelRTU(MPLightModel):
             o = None
             if (plane is not None):
                 if (plane.pixel_is_rtu_grid):
+                    w = None
+                    if weights_plane[jdx] is not None:
+                        w = weights_plane[jdx][mask_plane[jdx]]
                     o = plane.pixel_rtu_uniform_transform(
                         x_plane[jdx][mask_plane[jdx]],
                         y_plane[jdx][mask_plane[jdx]],
-                        weights_plane[jdx][mask_plane[jdx]]
+                        w
                     )
             output.append(o)
         return output
@@ -49,6 +52,8 @@ class MPLightModelRTU(MPLightModel):
                         transform_params=transform_params[j]
                     )
                 )
+            else:
+                flux.append(jnp.zeros_like(x[j]))
         return jnp.stack(flux)
 
 
@@ -57,16 +62,14 @@ class MPLensImageRTUGrid(MPLensImage):
         super().__init__(*args, **kwargs)
         self.centers = np.array(self.Grid.pixel_coordinates).reshape(2, -1)
         self._src_rtu_grid = self.MPLightModel.pixel_is_rtu_grid
-        self.rtu_mesh_weights_mask = []
+        self.rtu_mesh_weights_mask = [None] * self.MPLightModel.number_light_planes
         self.source_arc_masks_old = self.source_arc_masks
         for i, has_rtu in enumerate(self._src_rtu_grid):
             if has_rtu and (rtu_mesh_weights is not None):
                 w = np.where(self.source_arc_masks_old[i], rtu_mesh_weights[i], 0.0).ravel()
-            else:
-                w = np.where(self.source_arc_masks_old[i], 1.0, 0.0).ravel()
-            self.rtu_mesh_weights_mask.append(w / w.sum())
-            # remove the original mask and replace with one based on the weights value
-            self.source_arc_masks[i] = (w > 0).reshape(self.Grid.num_pixel_axes)
+                self.rtu_mesh_weights_mask[i] = w / w.sum()
+                # remove the original mask and replace with one based on the weights value
+                self.source_arc_masks[i] = (w > 0).reshape(self.Grid.num_pixel_axes)
             if has_rtu:
                 n_pix = self.MPLightModel.light_models[i].pixel_grid_settings['num_pixels']
                 pixel_width = (1 - 2e-5) / n_pix
@@ -196,7 +199,7 @@ class MPLensImageRTUGridLowMem(MPLensImageRTUGrid):
         sub_grid = jnp.array(jnp.meshgrid(sub_centers, sub_centers)).T.reshape(supersampling_factor**2, 2, 1)
         return sub_grid * pixel_width
 
-    @partial(jax.jit, static_argnums=(0, 5, 6))
+    @partial(jax.jit, static_argnums=(0, 5, 6, 7))
     def model(
         self,
         PSF_class,
@@ -204,7 +207,8 @@ class MPLensImageRTUGridLowMem(MPLensImageRTUGrid):
         kwargs_mass=None,
         kwargs_light=None,
         unconvolved=False,
-        apply_mask=True
+        apply_mask=True,
+        return_pixels_coords=False
     ):
         transform_params = [None] * self.MPLightModel.number_light_planes
         ra_centers_planes, dec_centers_planes = self.MPMassModel.ray_shooting(
@@ -220,12 +224,16 @@ class MPLensImageRTUGridLowMem(MPLensImageRTUGrid):
             dec_centers_planes
         )
         if any(self._src_rtu_grid):
-            transform_params = self.MPLightModel.pixel_rtu_uniform_transform(
+            transform_outputs = self.MPLightModel.pixel_rtu_uniform_transform(
                 ra_centers_planes,
                 dec_centers_planes,
                 self.source_arc_masks_flat,
                 self.rtu_mesh_weights_mask
             )
+            transform_params = [t[0] if t is not None else None for t in transform_outputs]
+            grid_coords = [t[1] if t is not None else None for t in transform_outputs]
+            grid_edges = [t[2] if t is not None else None for t in transform_outputs]
+
 
         # use jax.checkpoint to keep memory usage low when taking reverse mode jacobian
         @jax.checkpoint
@@ -249,18 +257,23 @@ class MPLensImageRTUGridLowMem(MPLensImageRTUGrid):
             )
             # apply mask if needed before summing
             if apply_mask:
-                new_value = new_value * self._source_arc_masks_flat
-            new_value.sum(axis=0)
+                new_value = new_value * self.source_arc_masks_flat
             # track a running mean on the sum of the planes
-            new_value = new_value * self.pixel_area
+            new_value = new_value.sum(axis=0) * self.pixel_area
             count += 1
             delta_value = new_value - mean
             # new_mean = mean + delta / new_count
             mean += delta_value / count
-            return (count, mean), None
+            return (count, mean.squeeze()), None
 
         init = (0, jnp.zeros(self.Grid.num_pixel))
         (_, model) = jax.lax.scan(body, init, self.deltas)[0]
+        model = model.reshape(self.Grid.num_pixel_axes)
+        if return_pixels_coords:
+            if any(self._src_rtu_grid):
+                return model, (grid_coords, grid_edges)
+            else:
+                return model, None
         if not unconvolved:
             model = PSF_class.convolution2d(model)
         return model
